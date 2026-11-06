@@ -2,7 +2,7 @@ import { DateTime } from "luxon";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import type { CalendarBooking, Category, Closure, PublicTeam, Room } from "../../shared/types";
-import { adminEndpoints, api, errorText, memberEndpoints, type Endpoints } from "../api";
+import { adminEndpoints, api, errorText, memberEndpoints, staffEndpoints, type Endpoints } from "../api";
 import { fmtTime, localDate, roomLabel, roomLocation, todayIn } from "../lib/time";
 import { brandStyle } from "./TeamPage";
 
@@ -10,14 +10,14 @@ import { brandStyle } from "./TeamPage";
  * Printable schedule (and "Save as PDF" through the browser's print dialog).
  * Members: /print/t/:token   Admins: /admin/teams/:id/print
  */
-export function PrintPage({ admin = false }: { admin?: boolean }) {
+export function PrintPage({ admin = false, staff = false }: { admin?: boolean; staff?: boolean }) {
   const { token = "", id = "" } = useParams();
   const [params, setParams] = useSearchParams();
   const [meta, setMeta] = useState<{ team: PublicTeam; rooms: Room[]; categories: Category[] } | null>(null);
   const [data, setData] = useState<{ bookings: CalendarBooking[]; closures: Closure[] } | null>(null);
   const [error, setError] = useState("");
 
-  const endpoints: Endpoints = admin ? adminEndpoints(Number(id)) : memberEndpoints(token);
+  const endpoints: Endpoints = admin ? adminEndpoints(Number(id)) : staff ? staffEndpoints(Number(id)) : memberEndpoints(token);
   const zone = meta?.team.timezone ?? "America/Toronto";
   const from = params.get("from") ?? todayIn(zone);
   const to = params.get("to") ?? from;
@@ -31,10 +31,10 @@ export function PrintPage({ admin = false }: { admin?: boolean }) {
   };
 
   useEffect(() => {
-    (admin ? api(`/admin/teams/${id}`) : api(`/t/${token}`, { headers: endpoints.headers }))
+    (admin ? api(`/admin/teams/${id}`) : staff ? api(`/s/teams/${id}`) : api(`/t/${token}`, { headers: endpoints.headers }))
       .then(setMeta)
       .catch((e) => setError(errorText(e)));
-  }, [admin, id, token]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [admin, staff, id, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const days = useMemo(() => {
     const out: string[] = [];
@@ -109,7 +109,7 @@ export function PrintPage({ admin = false }: { admin?: boolean }) {
   return (
     <div className="print-page" style={brandStyle(meta.team.accentColor)}>
       <div className="print-controls no-print">
-        <Link to={admin ? `/admin/teams/${id}` : `/t/${token}`} className="btn ghost small">
+        <Link to={admin ? `/admin/teams/${id}` : staff ? `/teams/${id}` : `/t/${token}`} className="btn ghost small">
           ← Back
         </Link>
         <label className="field inline">

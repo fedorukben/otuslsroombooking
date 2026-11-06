@@ -41,6 +41,8 @@ const zone = "America/Toronto";
 const monday = DateTime.now().setZone(zone).plus({ days: 7 }).startOf("week");
 const d = (offset: number) => monday.plus({ days: offset }).toISODate()!;
 
+let jTeamId = 0;
+
 async function main() {
   const server = await startServer();
   try {
@@ -246,6 +248,102 @@ async function main() {
     r = await call("GET", `/admin/activity?type=booking&q=Weekly`);
     check("global log is searchable", r.body.entries.length > 0 && r.body.entries.every((e: any) => e.action.startsWith("booking.")), r.body);
 
+    
+    console.log("Invite links and password resets");
+    r = await call("POST", "/admin/invites", { name: "Lidya Salim", email: "Lidya@Example.ca", teamIds: [team.id] });
+    check("super admin creates an invite link", r.status === 201 && /\/admin\/invite\//.test(r.body.link), r);
+    const inviteToken = r.body.link.split("/").pop();
+    r = await call("GET", "/admin/links");
+    check("pending links are listed", r.body.links.some((l: any) => l.kind === "invite" && l.email === "lidya@example.ca"), r.body);
+    r = await call("GET", `/admin/invite/${inviteToken}`, undefined, {}, false);
+    check("invite page shows who it's for", r.body.name === "Lidya Salim" && r.body.teams[0] === "Student Learning", r.body);
+    r = await call("POST", `/admin/invite/${inviteToken}`, { password: "short" }, {}, false);
+    check("invite rejects a short password", r.status === 400);
+    let inviteRes = await fetch(`${BASE}/admin/invite/${inviteToken}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "lidyas-own-password" }) });
+    const lidyaCookie = (inviteRes.headers.get("set-cookie") ?? "").split(";")[0];
+    check("invitee sets own password and is signed in", inviteRes.status === 201 && lidyaCookie.startsWith("rs_admin="), inviteRes.status);
+    r = await call("POST", `/admin/invite/${inviteToken}`, { password: "lidyas-own-password" }, {}, false);
+    check("invite link is single-use", r.status === 410, r);
+    r = await call("GET", "/admin/teams", undefined, { cookie: lidyaCookie }, false);
+    check("invited admin has the invited team", r.body.teams.length === 1 && r.body.teams[0].id === team.id, r.body);
+    r = await call("GET", `/admin/teams/${team.id}/people`);
+    check("invited admin is auto-added to the people list", r.body.people.some((p: any) => p.name === "Lidya Salim" && p.isAdmin), r.body);
+    check("team creator (super admin) is on the people list", r.body.people.some((p: any) => p.name === "Ben"), r.body.people);
+    r = await call("GET", "/admin/admins");
+    const lidyaId = r.body.admins.find((a: any) => a.email === "lidya@example.ca").id;
+    r = await call("POST", `/admin/admins/${lidyaId}/reset-link`, {});
+    check("super admin gets a reset link", r.status === 201 && /\/admin\/reset\//.test(r.body.link), r);
+    const resetToken = r.body.link.split("/").pop();
+    r = await call("POST", `/admin/reset/${resetToken}`, { password: "lidyas-new-password" }, {}, false);
+    check("reset link sets a new password", r.status === 200, r);
+    r = await call("GET", "/admin/teams", undefined, { cookie: lidyaCookie }, false);
+    check("reset signs out old sessions", r.status === 401, r.status);
+    r = await call("POST", `/admin/reset/${resetToken}`, { password: "another-password" }, {}, false);
+    check("reset link is single-use", r.status === 410);
+    r = await call("POST", "/admin/login", { email: "lidya@example.ca", password: "lidyas-new-password" }, {}, false);
+    check("new password works", r.status === 200);
+    r = await call("POST", "/admin/recover", { setupKey: "wrong", email: "ben@example.ca", newPassword: "recovered-password" }, {}, false);
+    check("recovery needs the setup key", r.status === 403);
+    r = await call("POST", "/admin/recover", { setupKey: process.env.ADMIN_SETUP_KEY, email: "lidya@example.ca", newPassword: "recovered-password" }, {}, false);
+    check("recovery only works for the super admin", r.status === 403);
+
+    console.log("People list");
+    r = await call("POST", `/admin/teams/${team.id}/people/import`, { text: "Name, Email, Role\nPriya Patel, priya@example.ca, Peer Educator\nSam Lee\nbad, not-an-email\nPriya Patel, x@y.ca" });
+    check("import adds people and skips duplicates/bad lines", r.body.added === 2 && r.body.skipped.length === 2, r.body);
+    r = await call("GET", T, undefined, { "x-team-pin": "" }, false);
+    check("members get the names (no emails)", r.body.people?.includes("Priya Patel") && !JSON.stringify(r.body.people).includes("@"), r.body.people);
+    r = await call("POST", `${T}/bookings`, { ...base, staffName: "priya patel", staffEmail: "", date: d(3), startTime: "15:00", endTime: "16:00" }, {}, false);
+    check("booking by listed name succeeds", r.status === 201, r.body);
+    const priyaView = await call("GET", `/manage/${r.body.manageToken}`, undefined, {}, false);
+    check("email on file is filled in and name normalised", priyaView.body.bookings[0].staffEmail === "priya@example.ca" && priyaView.body.bookings[0].staffName === "Priya Patel", priyaView.body.bookings[0]);
+    await call("PATCH", `/admin/teams/${team.id}`, { peopleOnly: true });
+    r = await call("POST", `${T}/bookings`, { ...base, staffName: "Random Person", date: d(3), startTime: "16:00", endTime: "17:00" }, {}, false);
+    check("people-only teams refuse unlisted names", r.status === 400 && /list/.test(r.body.error), r.body);
+    r = await call("POST", `/admin/teams/${team.id}/bookings`, { ...base, staffName: "Visiting Speaker", date: d(3), startTime: "16:00", endTime: "17:00" });
+    check("admins can still book for anyone", r.status === 201, r.body);
+    await call("PATCH", `/admin/teams/${team.id}`, { peopleOnly: false });
+
+    console.log("Super admin handover");
+    r = await call("POST", "/admin/super-transfer", { targetId: lidyaId, password: "longpassword1", phrase: "TRANSFER SUPER ADMIN", confirmEmail: "wrong@example.ca", understood: true, keepTeamIds: [team.id] });
+    check("handover needs the target's exact email", r.status === 400 && /email/.test(r.body.error), r.body);
+    r = await call("POST", "/admin/super-transfer", { targetId: lidyaId, password: "nope-nope-nope", phrase: "TRANSFER SUPER ADMIN", confirmEmail: "lidya@example.ca", understood: true });
+    check("handover needs your password", r.status === 400 && /password/.test(r.body.error));
+    r = await call("POST", "/admin/super-transfer", { targetId: lidyaId, password: "longpassword1", phrase: "transfer super admin", confirmEmail: "lidya@example.ca", understood: true });
+    check("handover needs the exact phrase", r.status === 400);
+    r = await call("POST", "/admin/super-transfer", { targetId: lidyaId, password: "longpassword1", phrase: "TRANSFER SUPER ADMIN", confirmEmail: "lidya@example.ca", understood: true, keepTeamIds: [team.id] });
+    check("handover offer created", r.status === 201 && r.body.transfer.direction === "out", r.body);
+    r = await call("GET", "/admin/status");
+    check("still super admin until accepted", r.body.admin.isSuper && r.body.transfer?.direction === "out", r.body);
+    const lidyaLogin = await fetch(`${BASE}/admin/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "lidya@example.ca", password: "lidyas-new-password" }) });
+    const lc = (lidyaLogin.headers.get("set-cookie") ?? "").split(";")[0];
+    r = await call("GET", "/admin/status", undefined, { cookie: lc }, false);
+    check("target sees the offer", r.body.transfer?.direction === "in" && r.body.transfer.fromName === "Ben", r.body);
+    r = await call("POST", "/admin/super-transfer/accept", { password: "lidyas-new-password", phrase: "nope" }, { cookie: lc }, false);
+    check("accept needs the exact phrase", r.status === 400);
+    r = await call("POST", "/admin/super-transfer/accept", { password: "lidyas-new-password", phrase: "ACCEPT SUPER ADMIN" }, { cookie: lc }, false);
+    check("target accepts", r.status === 200, r.body);
+    r = await call("GET", "/admin/status", undefined, { cookie: lc }, false);
+    check("target is now super admin", r.body.admin.isSuper === true, r.body);
+    r = await call("GET", "/admin/status");
+    check("old super admin is a regular admin", r.body.admin.isSuper === false, r.body);
+    r = await call("GET", "/admin/teams");
+    check("old super admin kept the team they chose", r.body.teams.length === 1 && r.body.teams[0].id === team.id, r.body);
+    r = await call("GET", "/admin/admins");
+    check("old super admin lost admin-account access", r.status === 403);
+    // hand it back so later tests run as super admin
+    const benId = (await call("GET", "/admin/admins", undefined, { cookie: lc }, false)).body.admins.find((a: any) => a.email === "ben@example.ca").id;
+    r = await call("POST", "/admin/super-transfer", { targetId: benId, password: "lidyas-new-password", phrase: "TRANSFER SUPER ADMIN", confirmEmail: "ben@example.ca", understood: true, keepTeamIds: [] }, { cookie: lc }, false);
+    check("new super admin can offer it back", r.status === 201, r.body);
+    r = await call("DELETE", "/admin/super-transfer", undefined, { cookie: lc }, false);
+    check("offer can be cancelled", r.status === 200);
+    r = await call("POST", "/admin/super-transfer/accept", { password: "longpassword1", phrase: "ACCEPT SUPER ADMIN" });
+    check("cancelled offer can't be accepted", r.status === 404);
+    await call("POST", "/admin/super-transfer", { targetId: benId, password: "lidyas-new-password", phrase: "TRANSFER SUPER ADMIN", confirmEmail: "ben@example.ca", understood: true, keepTeamIds: [] }, { cookie: lc }, false);
+    r = await call("POST", "/admin/super-transfer/accept", { password: "longpassword1", phrase: "ACCEPT SUPER ADMIN" });
+    check("handed back", r.status === 200 && (await call("GET", "/admin/status")).body.admin.isSuper === true);
+    const supers = await call("GET", "/admin/admins");
+    check("exactly one super admin throughout", supers.body.admins.filter((a: any) => a.isSuper).length === 1, supers.body);
+
     console.log("Super admin and team admins");
     r = await call("GET", "/admin/status");
     check("first admin is the super admin", r.body.admin.isSuper === true, r.body);
@@ -271,6 +369,7 @@ async function main() {
     r = await call("GET", "/admin/teams");
     check("...and is assigned to it", r.body.teams.length === 1 && r.body.teams[0].name === "Jerome's team", r.body);
     const jTeam = r.body.teams[0].id;
+    jTeamId = jTeam;
     r = await call("DELETE", `/admin/teams/${jTeam}`);
     check("only super admin can delete teams", r.status === 403);
     const jeromeCookie = cookie;
@@ -285,6 +384,69 @@ async function main() {
     r = await call("GET", `/admin/activity?teamId=${team.id}`);
     check("assigned admin sees that team's log", r.status === 200 && r.body.entries.length > 0);
     cookie = superCookie;
+
+
+    console.log("Staff sign-in and dashboard");
+    r = await call("GET", `/admin/teams/${team.id}/people`);
+    const priya = r.body.people.find((p: any) => p.name === "Priya Patel");
+    const sam = r.body.people.find((p: any) => p.name === "Sam Lee");
+    check("people start without sign-in", priya && !priya.hasLogin, priya);
+    r = await call("POST", `/admin/people/${sam.id}/access`, {});
+    check("sign-in needs an email on file", r.status === 400 && /email/.test(r.body.error), r.body);
+    r = await call("POST", `/admin/people/${priya.id}/access`, {});
+    check("team admin creates a staff invite link", r.status === 201 && r.body.path.startsWith("/invite/"), r.body);
+    const staffTok = r.body.path.split("/").pop();
+    r = await call("GET", `/admin/teams/${team.id}/people`);
+    check("person shows invite pending", r.body.people.find((p: any) => p.id === priya.id).invitePending === true);
+    r = await call("GET", `/invite/${staffTok}`, undefined, {}, false);
+    check("staff invite page shows team", r.body.teamName === "Student Learning" && r.body.email === "priya@example.ca", r.body);
+    let sres = await fetch(`${BASE}/invite/${staffTok}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "priyas-password" }) });
+    const pc = (sres.headers.get("set-cookie") ?? "").split(";")[0];
+    check("staff sets password and is signed in", sres.status === 201 && pc.startsWith("rs_admin="), sres.status);
+    r = await call("GET", "/me", undefined, { cookie: pc }, false);
+    check("/me lists staff team", r.body.account.isAdmin === false && r.body.teams.length === 1 && r.body.teams[0].role === "staff", r.body);
+    r = await call("GET", "/admin/teams", undefined, { cookie: pc }, false);
+    check("staff can't use admin API", r.status === 403, r);
+    r = await call("GET", "/admin/status", undefined, { cookie: pc }, false);
+    check("status: account but not admin", r.body.admin === null && r.body.account?.name === "Priya Patel", r.body);
+    r = await call("GET", `/s/teams/${team.id}`, undefined, { cookie: pc }, false);
+    check("staff opens their team", r.status === 200 && r.body.me.name === "Priya Patel", r.body);
+    r = await call("POST", `/s/teams/${team.id}/bookings`, { ...base, staffName: "Somebody Else", staffEmail: "x@x.ca", date: d(4), startTime: "09:00", endTime: "10:00" }, { cookie: pc }, false);
+    check("staff booking succeeds", r.status === 201, r.body);
+    r = await call("GET", "/me/bookings", undefined, { cookie: pc }, false);
+    const mine = r.body.bookings.find((b: any) => b.title === base.title && b.startsAt.startsWith(d(4)));
+    check("my bookings lists it with a manage link", mine && mine.manageToken, r.body);
+    const mv = await call("GET", `/manage/${mine.manageToken}`, undefined, {}, false);
+    check("staff always book as themselves", mv.body.bookings[0].staffName === "Priya Patel" && mv.body.bookings[0].staffEmail === "priya@example.ca", mv.body.bookings[0]);
+    r = await call("GET", `/s/teams/${jTeamId}`, undefined, { cookie: pc }, false);
+    check("staff can't open other teams", r.status === 403, r);
+    r = await call("POST", `/admin/people/${priya.id}/reset-link`, {});
+    check("team admin makes a staff reset link", r.status === 201 && r.body.path.startsWith("/reset/"), r.body);
+    r = await call("POST", `/admin/reset/${r.body.path.split("/").pop()}`, { password: "priyas-new-password" }, {}, false);
+    check("staff reset works", r.status === 200);
+    r = await call("GET", "/me", undefined, { cookie: pc }, false);
+    check("reset signs staff out elsewhere", r.status === 401);
+    r = await call("POST", "/admin/login", { email: "priya@example.ca", password: "priyas-new-password" }, {}, false);
+    check("staff sign in with new password", r.status === 200 && r.body.admin.isAdmin === false, r.body);
+
+    await call("PATCH", `/admin/teams/${team.id}`, { linkAccess: false });
+    r = await call("GET", T, undefined, {}, false);
+    check("team link can be switched off (sign-in only)", r.status === 403 && r.body.loginRequired === true, r.body);
+    await call("PATCH", `/admin/teams/${team.id}`, { linkAccess: true });
+
+    r = await call("POST", "/admin/invites", { name: "Priya Patel", email: "priya@example.ca", teamIds: [team.id] });
+    check("inviting a staff email as admin promotes that account", r.status === 200 && r.body.promoted === true, r.body);
+    r = await call("GET", "/admin/admins");
+    check("promoted account is listed as admin", r.body.admins.some((a: any) => a.email === "priya@example.ca"), r.body);
+
+    r = await call("POST", `/admin/teams/${team.id}/people`, { name: "Temp Staff", email: "temp@example.ca" });
+    const tempId = r.body.person.id;
+    const tp = await call("POST", `/admin/people/${tempId}/access`, {});
+    await fetch(`${BASE}/invite/${tp.body.path.split("/").pop()}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "temp-password1" }) });
+    r = await call("DELETE", `/admin/people/${tempId}/access`);
+    check("removing sign-in works", r.status === 200);
+    r = await call("POST", "/admin/login", { email: "temp@example.ca", password: "temp-password1" }, {}, false);
+    check("staff account with no team left is deleted", r.status === 401, r);
 
     console.log("PIN");
     r = await call("PATCH", `/admin/teams/${team.id}`, { pin: "4321" });

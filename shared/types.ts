@@ -69,6 +69,8 @@ export interface PublicTeam {
   pinRequired: boolean;
   rules: BookingRules;
   requiredFields: RequiredFields;
+  /** Staff must pick their name from the team's people list. */
+  peopleOnly: boolean;
 }
 
 export interface AdminTeam extends PublicTeam {
@@ -77,6 +79,8 @@ export interface AdminTeam extends PublicTeam {
   feedToken: string;
   adminFeedToken: string;
   hasPin: boolean;
+  /** Whether the no-login team link still works. */
+  linkAccess: boolean;
   defaultHours: WeeklyHours;
   roomCount: number;
   pendingCount: number;
@@ -191,6 +195,7 @@ export interface ManageView {
   bookings: ManagedBooking[];
   admin: boolean;
   teamId?: number;
+  people: string[];
 }
 
 export type EditScope = "this" | "following" | "all";
@@ -230,4 +235,62 @@ export interface AdminAccount {
   teamIds: number[];
   createdAt: string;
   lastLoginAt: string | null;
+}
+
+export interface Person {
+  id: number;
+  name: string;
+  email: string;
+  role: string;
+  active: boolean;
+  isAdmin: boolean;
+  /** Can sign in (linked to an account). */
+  hasLogin: boolean;
+  /** An unused sign-in invite link exists. */
+  invitePending: boolean;
+}
+
+export interface MyTeam {
+  id: number;
+  name: string;
+  description: string;
+  accentColor: string;
+  logoDataUrl: string | null;
+  timezone: string;
+  role: "admin" | "staff";
+}
+
+export interface MyBooking {
+  id: number;
+  seriesId: number;
+  teamId: number;
+  teamName: string;
+  roomName: string;
+  title: string;
+  categoryName: string;
+  startsAt: string;
+  endsAt: string;
+  allDay: boolean;
+  status: BookingStatus;
+  recurring: boolean;
+  manageToken: string;
+}
+
+export interface PendingLink {
+  id: number;
+  kind: "invite" | "reset";
+  name: string;
+  email: string;
+  teamIds: number[];
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface TransferOffer {
+  id: number;
+  fromName: string;
+  toName: string;
+  toEmail: string;
+  keepTeamIds: number[];
+  expiresAt: string;
 }

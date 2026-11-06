@@ -11,7 +11,7 @@ import { SubscribeModal } from "./SubscribeModal";
 import { Modal } from "./Modal";
 const RoomCalendar = lazy(() => import("./RoomCalendar").then((m) => ({ default: m.RoomCalendar })));
 
-type View = "day" | "room" | "find" | "rooms";
+export type View = "day" | "room" | "find" | "rooms";
 
 export function Scheduler({
   team,
@@ -21,7 +21,20 @@ export function Scheduler({
   feedToken,
   adminFeedToken,
   printPath,
+  people = [],
+  self,
+  ownSeries,
+  initialView = "day",
+  openNew = false,
+  initialDate,
 }: {
+  initialDate?: string;
+  people?: string[];
+  self?: { name: string; email: string };
+  /** Signed-in staff: series they own -> manage token (instead of this device's saved links). */
+  ownSeries?: Map<number, string>;
+  initialView?: View;
+  openNew?: boolean;
   team: PublicTeam;
   rooms: Room[];
   categories: Category[];
@@ -33,15 +46,15 @@ export function Scheduler({
   const admin = endpoints.admin;
   const zone = team.timezone;
   const navigate = useNavigate();
-  const [view, setView] = useState<View>("day");
-  const [date, setDate] = useState(todayIn(zone));
+  const [view, setView] = useState<View>(initialView);
+  const [date, setDate] = useState(initialDate ?? todayIn(zone));
   const [roomId, setRoomId] = useState<number>(rooms[0]?.id ?? 0);
   const [campus, setCampus] = useState("");
   const [building, setBuilding] = useState("");
   const [minCap, setMinCap] = useState("");
   const [search, setSearch] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
-  const [form, setForm] = useState<Partial<FormState> | null>(null);
+  const [form, setForm] = useState<Partial<FormState> | null>(() => (openNew && rooms[0] ? { roomId: rooms[0].id, date: todayIn(team.timezone) } : null));
   const [created, setCreated] = useState<{ token: string; status: string; count: number } | null>(null);
   const [open, setOpen] = useState<CalendarBooking | null>(null);
   const [openErr, setOpenErr] = useState("");
@@ -62,7 +75,7 @@ export function Scheduler({
   const calRoom = rooms.find((r) => r.id === roomId) ?? filtered[0] ?? rooms[0];
   const catById = new Map(categories.map((c) => [c.id, c]));
   const roomById = new Map(rooms.map((r) => [r.id, r]));
-  const mine = admin ? null : new Map(savedBookings.list().map((b) => [b.seriesId, b.token]));
+  const mine = admin ? null : ownSeries ?? new Map(savedBookings.list().map((b) => [b.seriesId, b.token]));
 
   const startBooking = (r: Room, d: string, s: number, e: number) =>
     setForm({ roomId: r.id, date: d, startTime: toHm(s), endTime: e >= 1440 ? "23:59" : toHm(e) });
@@ -237,13 +250,15 @@ export function Scheduler({
             admin={admin}
             initial={form}
             endpoints={endpoints}
+            people={people}
+            self={self}
             onCancel={() => setForm(null)}
             onDone={(res) => {
               setForm(null);
               setRefreshKey((k) => k + 1);
               if (res.kind === "created") {
                 const r = roomById.get(res.state.roomId);
-                if (!admin) {
+                if (!admin && !self) {
                   savedBookings.add({
                     token: res.result.manageToken,
                     seriesId: res.result.seriesId,
@@ -269,7 +284,8 @@ export function Scheduler({
               {created.count === 1 ? "Your booking" : `${created.count} bookings`}{" "}
               {created.status === "pending" ? "are holding the time and waiting for an admin to approve them." : "are confirmed."}
             </p>
-            {!admin && (
+            {self && <p>It's in <strong>My bookings</strong> on your dashboard, where you can change or cancel it.</p>}
+            {!admin && !self && (
               <>
                 <p>
                   Keep this private link to change or cancel later. It's also saved under <strong>My bookings</strong> on this device. Anyone with

@@ -31,6 +31,8 @@ export interface TeamRow {
   require_email: boolean;
   require_attendance: boolean;
   require_description: boolean;
+  people_only: boolean;
+  link_access: boolean;
   default_hours: WeeklyHours;
   created_at: Date;
 }
@@ -125,6 +127,7 @@ export function publicTeam(t: TeamRow): PublicTeam {
     pinRequired: !!t.pin_hash,
     rules: teamRules(t),
     requiredFields: { email: t.require_email, attendance: t.require_attendance, description: t.require_description },
+    peopleOnly: t.people_only,
   };
 }
 
@@ -136,6 +139,7 @@ export function adminTeam(t: TeamRow & { room_count?: number; pending_count?: nu
     feedToken: t.feed_token,
     adminFeedToken: t.admin_feed_token,
     hasPin: !!t.pin_hash,
+    linkAccess: t.link_access,
     defaultHours: t.default_hours,
     roomCount: Number(t.room_count ?? 0),
     pendingCount: Number(t.pending_count ?? 0),

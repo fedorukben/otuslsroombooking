@@ -11,6 +11,7 @@ interface Data {
   rooms: Room[];
   categories: Category[];
   feedToken: string;
+  people: string[];
 }
 
 export function brandStyle(accent: string): CSSProperties {
@@ -36,7 +37,7 @@ export function TeamHeader({ name, description, logo, children }: { name: string
 export function TeamPage() {
   const { token = "" } = useParams();
   const [data, setData] = useState<Data | null>(null);
-  const [gate, setGate] = useState<{ teamName: string; accentColor: string; logoDataUrl: string | null; error: string } | null>(null);
+  const [gate, setGate] = useState<{ teamName: string; accentColor: string; logoDataUrl: string | null; error: string; login?: boolean } | null>(null);
   const [error, setError] = useState("");
   const [pin, setPin] = useState("");
   const [showMine, setShowMine] = useState(false);
@@ -48,7 +49,9 @@ export function TeamPage() {
       setGate(null);
       document.title = `${d.team.name} · Room booking`;
     } catch (err) {
-      if (err instanceof ApiError && err.data?.pinRequired) {
+      if (err instanceof ApiError && err.data?.loginRequired) {
+        setGate({ teamName: err.data.teamName, accentColor: err.data.accentColor, logoDataUrl: err.data.logoDataUrl, error: err.message, login: true });
+      } else if (err instanceof ApiError && err.data?.pinRequired) {
         setGate({ teamName: err.data.teamName, accentColor: err.data.accentColor, logoDataUrl: err.data.logoDataUrl, error: pinStore.get(token) ? err.message : "" });
       } else setError(errorText(err));
     }
@@ -70,6 +73,21 @@ export function TeamPage() {
         <div className="card narrow">
           <h1>Link not available</h1>
           <p>{error}</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (gate?.login) {
+    return (
+      <main className="center-page" style={brandStyle(gate.accentColor)}>
+        <div className="card narrow">
+          {gate.logoDataUrl && <img src={gate.logoDataUrl} alt="" className="team-logo" />}
+          <p className="eyebrow">Room booking</p>
+          <h1>{gate.teamName}</h1>
+          <p>{gate.error}</p>
+          <p className="hint">No sign-in yet? Ask a team admin to send you an invite from their People tab.</p>
+          <Link className="btn primary block" to="/">Sign in</Link>
         </div>
       </main>
     );
@@ -139,6 +157,7 @@ export function TeamPage() {
           categories={data.categories}
           endpoints={memberEndpoints(token)}
           feedToken={data.feedToken}
+          people={data.people}
           printPath={`/print/t/${token}`}
         />
       </main>

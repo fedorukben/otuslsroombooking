@@ -1,6 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { api, errorText } from "../../api";
+import { Modal } from "../../components/Modal";
+import type { TransferOffer } from "../../../shared/types";
+
+type Transfer = (TransferOffer & { direction: "in" | "out" }) | null;
 
 interface Me {
   id: number;
@@ -9,12 +13,13 @@ interface Me {
   isSuper: boolean;
 }
 
-const AdminCtx = createContext<{ me: Me; signOut: () => void } | null>(null);
+const AdminCtx = createContext<{ me: Me; signOut: () => void; transfer: Transfer; refresh: () => void } | null>(null);
 export const useAdmin = () => useContext(AdminCtx)!;
 
 /** Shows first-run setup or sign-in until there's an admin session, then renders the admin area. */
 export function AdminShell({ children, bare = false }: { children: ReactNode; bare?: boolean }) {
-  const [status, setStatus] = useState<{ needsSetup: boolean; setupKeyConfigured: boolean; admin: Me | null } | null>(null);
+  const [status, setStatus] = useState<{ needsSetup: boolean; setupKeyConfigured: boolean; admin: Me | null; transfer: Transfer } | null>(null);
+  const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
@@ -37,7 +42,7 @@ export function AdminShell({ children, bare = false }: { children: ReactNode; ba
   if (!status.admin) return <Login onDone={refresh} />;
 
   return (
-    <AdminCtx.Provider value={{ me: status.admin, signOut }}>
+    <AdminCtx.Provider value={{ me: status.admin, signOut, transfer: status.transfer, refresh }}>
       <div className="admin-shell">
         {!bare && <header className="admin-bar">
           <Link to="/admin" className="wordmark">
@@ -61,6 +66,25 @@ export function AdminShell({ children, bare = false }: { children: ReactNode; ba
             </button>
           </div>
         </header>}
+        {!bare && status.transfer?.direction === "in" && (
+          <div className="transfer-banner" role="status">
+            <span>
+              <strong>{status.transfer.fromName}</strong> wants to make you the <strong>super admin</strong>. Nothing changes unless you accept.
+            </span>
+            <button className="btn small" onClick={() => setAccepting(true)}>Review</button>
+          </div>
+        )}
+        {!bare && status.transfer?.direction === "out" && (
+          <div className="transfer-banner out" role="status">
+            <span>
+              Super admin handover to <strong>{status.transfer.toName}</strong> is waiting for them to accept. You're still the super admin until they do.
+            </span>
+            <Link className="btn small" to="/admin/accounts#handover">Manage</Link>
+          </div>
+        )}
+        {accepting && status.transfer?.direction === "in" && (
+          <AcceptTransfer transfer={status.transfer} onClose={() => setAccepting(false)} onDone={() => { setAccepting(false); refresh(); navigate("/admin"); }} />
+        )}
         {children}
       </div>
     </AdminCtx.Provider>
@@ -112,6 +136,13 @@ function Login({ onDone }: { onDone: () => void }) {
       <button className="btn primary block" disabled={busy}>
         {busy ? "Signing in…" : "Sign in"}
       </button>
+      <details className="forgot">
+        <summary>Forgot your password?</summary>
+        <p>Ask the super admin for a password reset link. It lets you choose a new password and works for 24 hours.</p>
+        <p>
+          If <em>you</em> are the super admin, use <Link to="/admin/recover">super admin recovery</Link> with the setup key from Netlify.
+        </p>
+      </details>
     </AuthCard>
   );
 }
@@ -166,5 +197,66 @@ function Setup({ keyConfigured, onDone }: { keyConfigured: boolean; onDone: () =
       {error && <p className="error" role="alert">{error}</p>}
       <button className="btn primary block">Create admin account</button>
     </AuthCard>
+  );
+}
+
+function AcceptTransfer({ transfer, onClose, onDone }: { transfer: NonNullable<Transfer>; onClose: () => void; onDone: () => void }) {
+  const [password, setPassword] = useState("");
+  const [phrase, setPhrase] = useState("");
+  const [ack, setAck] = useState(false);
+  const [error, setError] = useState("");
+  const PHRASE = "ACCEPT SUPER ADMIN";
+  return (
+    <Modal title="Become the super admin?" onClose={onClose}>
+      <div className="stack">
+        <p>
+          <strong>{transfer.fromName}</strong> is offering you the super admin role. If you accept:
+        </p>
+        <ul className="consequences">
+          <li>You can see and manage <strong>every team</strong>, add and remove admins, delete teams, and see the all-teams activity log.</li>
+          <li>{transfer.fromName} becomes a regular admin. They'll lose those powers right away, and only you can give the role back.</li>
+          <li>If you ever forget your password, recovery uses the <code>ADMIN_SETUP_KEY</code> in Netlify, so make sure you can get it.</li>
+        </ul>
+        <label className="check">
+          <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} /> I understand and want to take this on.
+        </label>
+        <label className="field">
+          <span>Type <code>{PHRASE}</code></span>
+          <input value={phrase} onChange={(e) => setPhrase(e.target.value)} autoComplete="off" />
+        </label>
+        <label className="field">
+          <span>Your password</span>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+        </label>
+        {error && <p className="error" role="alert">{error}</p>}
+        <div className="actions">
+          <button
+            className="btn ghost danger"
+            onClick={async () => {
+              if (!confirm("Decline the super admin role?")) return;
+              await api("/admin/super-transfer", { method: "DELETE" }).catch(() => undefined);
+              onDone();
+            }}
+          >
+            Decline
+          </button>
+          <button className="btn ghost" onClick={onClose}>Decide later</button>
+          <button
+            className="btn primary"
+            disabled={!ack || phrase.trim() !== PHRASE || !password}
+            onClick={async () => {
+              try {
+                await api("/admin/super-transfer/accept", { body: { password, phrase } });
+                onDone();
+              } catch (e) {
+                setError(errorText(e));
+              }
+            }}
+          >
+            Accept super admin
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }

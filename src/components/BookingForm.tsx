@@ -44,7 +44,12 @@ export function BookingForm({
   edit,
   onDone,
   onCancel,
+  people = [],
+  self,
 }: {
+  people?: string[];
+  /** Signed-in staff: they always book as themselves. */
+  self?: { name: string; email: string };
   team: PublicTeam;
   rooms: Room[];
   categories: Category[];
@@ -60,8 +65,8 @@ export function BookingForm({
     roomId: rooms[0]?.id ?? 0,
     categoryId: 0,
     title: "",
-    staffName: admin ? "" : remembered.name,
-    staffEmail: admin ? "" : remembered.email,
+    staffName: self ? self.name : admin ? "" : remembered.name,
+    staffEmail: self ? self.email : admin ? "" : remembered.email,
     attendance: "",
     description: "",
     isPrivate: false,
@@ -74,6 +79,10 @@ export function BookingForm({
     scope: edit?.seriesRecurring ? "this" : "all",
     ...initial,
   }));
+  const listed = people.length > 0;
+  const allowOther = admin || !team.peopleOnly;
+  const inList = (n: string) => people.find((p) => p.toLowerCase() === n.trim().toLowerCase());
+  const [otherName, setOtherName] = useState(() => listed && allowOther && !!s.staffName && !inList(s.staffName));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [review, setReview] = useState<PreviewResult | null>(null);
@@ -127,7 +136,7 @@ export function BookingForm({
     setBusy(true);
     setError("");
     try {
-      if (!admin) me.set({ name: s.staffName, email: s.staffEmail });
+      if (!admin && !self) me.set({ name: s.staffName, email: s.staffEmail });
       if (edit) {
         const r = await api<{ updated: number; status: BookingStatus }>(`${edit.manageBase}/bookings/${edit.bookingId}`, {
           method: "PATCH",
@@ -263,18 +272,58 @@ export function BookingForm({
 
       {showRepeat && s.date && <RecurrenceEditor value={s.recurrence} onChange={(v) => set("recurrence", v)} startDate={s.date} />}
 
+      {self ? (
+        <div className="booking-as">
+          Booking as <strong>{self.name}</strong>
+          {self.email ? <span className="muted"> · {self.email}</span> : null}
+        </div>
+      ) : (
       <div className="grid-2">
-        <label className="field">
-          <span>Staff member name</span>
-          <input value={s.staffName} onChange={(e) => set("staffName", e.target.value)} autoComplete="name" required maxLength={120} />
-        </label>
+        {listed && !otherName ? (
+          <label className="field">
+            <span>Staff member</span>
+            <select
+              value={inList(s.staffName) ?? ""}
+              onChange={(e) => {
+                if (e.target.value === "__other") {
+                  setOtherName(true);
+                  set("staffName", "");
+                } else set("staffName", e.target.value);
+              }}
+              required
+            >
+              <option value="" disabled>
+                Choose a name…
+              </option>
+              {people.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+              {allowOther && <option value="__other">Someone else…</option>}
+            </select>
+            {!allowOther && <small className="hint">Not on the list? Ask a team admin to add you.</small>}
+          </label>
+        ) : (
+          <label className="field">
+            <span>Staff member name</span>
+            <input value={s.staffName} onChange={(e) => set("staffName", e.target.value)} autoComplete="name" required maxLength={120} />
+            {listed && (
+              <button type="button" className="link-btn left" onClick={() => { setOtherName(false); set("staffName", ""); }}>
+                Pick from the list instead
+              </button>
+            )}
+          </label>
+        )}
         <label className="field">
           <span>
             Email {req.email ? "" : <em className="opt">optional</em>}
           </span>
-          <input type="email" value={s.staffEmail} onChange={(e) => set("staffEmail", e.target.value)} autoComplete="email" required={req.email} />
+          <input type="email" value={s.staffEmail} onChange={(e) => set("staffEmail", e.target.value)} autoComplete="email" required={req.email && !inList(s.staffName)} />
+          {listed && inList(s.staffName) && !s.staffEmail && <small className="hint">Leave blank to use the email on file.</small>}
         </label>
       </div>
+      )}
 
       <div className="grid-2">
         <label className="field">

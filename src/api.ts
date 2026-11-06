@@ -75,6 +75,17 @@ export function memberEndpoints(token: string): Endpoints {
   };
 }
 
+/** Signed-in staff: book as themselves, no team link or PIN needed. */
+export function staffEndpoints(teamId: number): Endpoints {
+  return {
+    events: `/s/teams/${teamId}/events`,
+    preview: `/s/teams/${teamId}/bookings/preview`,
+    create: `/s/teams/${teamId}/bookings`,
+    headers: {},
+    admin: false,
+  };
+}
+
 export function adminEndpoints(teamId: number): Endpoints {
   return {
     events: `/admin/teams/${teamId}/events`,

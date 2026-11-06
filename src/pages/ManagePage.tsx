@@ -162,6 +162,7 @@ export function ManagePage({ admin = false }: { admin?: boolean }) {
             rooms={view.rooms}
             categories={view.categories}
             admin={admin}
+            people={view.people}
             edit={{ manageBase: base, bookingId: editing.id, seriesRecurring: recurring, headers: {} }}
             initial={{
               roomId: editing.roomId,

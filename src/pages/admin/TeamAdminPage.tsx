@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { AdminTeam, BookingRules, CalendarBooking, Category, Closure, Room, RuleOverrides, WeeklyHours } from "../../../shared/types";
+import type { AdminTeam, BookingRules, CalendarBooking, Category, Closure, Person, Room, RuleOverrides, WeeklyHours } from "../../../shared/types";
 import { adminEndpoints, api, errorText } from "../../api";
 import { HoursEditor } from "../../components/HoursEditor";
 import { Modal } from "../../components/Modal";
@@ -17,9 +17,10 @@ interface Data {
   rooms: Room[];
   categories: Category[];
   admins: { name: string; email: string }[];
+  people: string[];
 }
 
-const TABS = ["calendar", "approvals", "rooms", "categories", "closures", "activity", "settings"] as const;
+const TABS = ["calendar", "approvals", "rooms", "people", "categories", "closures", "activity", "settings"] as const;
 type Tab = (typeof TABS)[number];
 
 export function TeamAdminPage() {
@@ -73,9 +74,11 @@ export function TeamAdminPage() {
             feedToken={team.feedToken}
             adminFeedToken={team.adminFeedToken}
             printPath={`/admin/teams/${team.id}/print`}
+            people={data.people}
           />
         )}
         {tab === "activity" && <ActivityList teamId={team.id} zone={team.timezone} />}
+        {tab === "people" && <PeopleTab team={team} onChange={load} />}
         {tab === "approvals" && <ApprovalsTab team={team} onChange={load} />}
         {tab === "rooms" && <RoomsTab data={data} onChange={load} />}
         {tab === "categories" && <CategoriesTab team={team} categories={data.categories} onChange={load} />}
@@ -534,6 +537,8 @@ function SettingsTab({
     rules: team.rules as BookingRules,
     requiredFields: team.requiredFields,
     defaultHours: team.defaultHours,
+    peopleOnly: team.peopleOnly,
+    linkAccess: team.linkAccess,
   });
   const [pin, setPin] = useState("");
   const [msg, setMsg] = useState("");
@@ -617,6 +622,23 @@ function SettingsTab({
           ))}
         </div>
 
+        <h2>How staff get in</h2>
+        <label className="check">
+          <input type="checkbox" checked={s.linkAccess} onChange={(e) => setS({ ...s, linkAccess: e.target.checked })} />
+          Also allow booking through the team link without signing in
+        </label>
+        <p className="hint">
+          Staff with a sign-in (People tab → Give sign-in) always book from their dashboard. Untick this once everyone has a sign-in, so only
+          signed-in staff can book. Existing bookings and their private links keep working either way.
+        </p>
+
+        <h2>People list</h2>
+        <label className="check">
+          <input type="checkbox" checked={s.peopleOnly} onChange={(e) => setS({ ...s, peopleOnly: e.target.checked })} />
+          Staff must choose their name from the People list (admins can still book for anyone)
+        </label>
+        <p className="hint">When this is off, the list is a convenience and staff can type any name.</p>
+
         <h2>Default hours for new rooms</h2>
         <HoursEditor value={s.defaultHours} onChange={(h) => setS({ ...s, defaultHours: h })} />
 
@@ -685,6 +707,199 @@ function SettingsTab({
           </button>
         </div>
       </div>}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------- People
+
+function PeopleTab({ team, onChange }: { team: AdminTeam; onChange: () => void }) {
+  const [people, setPeople] = useState<Person[]>([]);
+  const [f, setF] = useState({ name: "", email: "", role: "" });
+  const [editing, setEditing] = useState<Person | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [search, setSearch] = useState("");
+  const [msg, setMsg] = useState("");
+  const [error, setError] = useState("");
+  const load = useCallback(() => {
+    api<{ people: Person[] }>(`/admin/teams/${team.id}/people`).then((r) => setPeople(r.people)).catch((e) => setError(errorText(e)));
+  }, [team.id]);
+  useEffect(load, [load]);
+  const changed = () => {
+    load();
+    onChange();
+  };
+  const shown = people.filter((p) => !search || `${p.name} ${p.email} ${p.role}`.toLowerCase().includes(search.toLowerCase()));
+  const [linkModal, setLinkModal] = useState<{ title: string; url: string; note: string } | null>(null);
+  const giveAccess = async (p: Person) => {
+    setError("");
+    try {
+      const r = await api<{ path?: string; linked?: boolean }>(`/admin/people/${p.id}/access`, { body: {} });
+      if (r.linked) setMsg(`${p.name} already had an account, so it's now connected to this team. They can sign in with their usual password.`);
+      else setLinkModal({ title: `Sign-in invite for ${p.name}`, url: location.origin + r.path, note: `Send this to ${p.name}. They'll set a password and land on their dashboard. It works once and expires in 7 days.` });
+      changed();
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  const resetLink = async (p: Person) => {
+    setError("");
+    try {
+      const r = await api<{ path: string }>(`/admin/people/${p.id}/reset-link`, { body: {} });
+      setLinkModal({ title: `Password reset link for ${p.name}`, url: location.origin + r.path, note: `Send this to ${p.name}. It lets them choose a new password, works once, and expires in 24 hours.` });
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
+  return (
+    <section className="narrow-section">
+      <p className="muted">
+        The people who book rooms for this team. They appear as a dropdown on the booking form, and their email is filled in automatically.
+        Use <strong>Give sign-in</strong> to send someone an invite to their own account; they then book from their dashboard.
+        {team.peopleOnly ? " Staff can only book under a name on this list (Settings)." : " Staff can still type a name that isn't listed (change this in Settings)."}
+      </p>
+      {error && <p className="error">{error}</p>}
+      {msg && <p className="notice">{msg}</p>}
+      <form
+        className="card grid-4"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setError("");
+          try {
+            await api(`/admin/teams/${team.id}/people`, { body: f });
+            setF({ name: "", email: "", role: "" });
+            changed();
+          } catch (err) {
+            setError(errorText(err));
+          }
+        }}
+      >
+        <label className="field"><span>Name</span><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required maxLength={120} /></label>
+        <label className="field"><span>Email <em className="opt">optional</em></span><input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></label>
+        <label className="field"><span>Role <em className="opt">optional</em></span><input value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })} placeholder="e.g. Peer Educator" maxLength={120} /></label>
+        <div className="actions"><button className="btn primary">Add person</button></div>
+      </form>
+      <div className="row between">
+        <input type="search" placeholder="Search people…" aria-label="Search people" value={search} onChange={(e) => setSearch(e.target.value)} style={{ maxWidth: 320 }} />
+        <button className="btn" onClick={() => setImporting(true)}>Import a list…</button>
+      </div>
+      <table className="table">
+        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sign-in</th><th><span className="sr-only">Actions</span></th></tr></thead>
+        <tbody>
+          {shown.map((p) => (
+            <tr key={p.id} className={p.active ? "" : "dim"}>
+              <td><strong>{p.name}</strong>{p.isAdmin && <span className="badge">Admin</span>}</td>
+              <td>{p.email || "—"}</td>
+              <td>{p.role || "—"}</td>
+              <td>
+                {p.hasLogin ? <span className="badge ok">Can sign in</span> : p.invitePending ? <span className="badge amber">Invite sent</span> : <span className="muted small-text">—</span>}
+                {!p.active && <span className="badge">Inactive</span>}
+              </td>
+              <td className="right">
+                {!p.hasLogin && (
+                  <>
+                    <button className="btn small primary" onClick={() => giveAccess(p)}>{p.invitePending ? "New invite link" : "Give sign-in"}</button>{" "}
+                  </>
+                )}
+                {p.hasLogin && !p.isAdmin && (
+                  <>
+                    <button className="btn small" onClick={() => resetLink(p)}>Reset password</button>{" "}
+                    <button
+                      className="btn small ghost"
+                      onClick={async () => {
+                        if (!confirm(`Remove ${p.name}'s sign-in for this team? They stay on the list and their bookings are unchanged.`)) return;
+                        await api(`/admin/people/${p.id}/access`, { method: "DELETE" }).catch((e) => setError(errorText(e)));
+                        changed();
+                      }}
+                    >
+                      Remove sign-in
+                    </button>{" "}
+                  </>
+                )}
+                <button className="btn small" onClick={() => setEditing(p)}>Edit</button>{" "}
+                <button
+                  className="btn small ghost danger"
+                  onClick={async () => {
+                    if (!confirm(`Remove ${p.name} from the list? Their existing bookings stay as they are.`)) return;
+                    await api(`/admin/people/${p.id}`, { method: "DELETE" }).catch((e) => setError(errorText(e)));
+                    changed();
+                  }}
+                >
+                  Remove
+                </button>
+              </td>
+            </tr>
+          ))}
+          {!shown.length && <tr><td colSpan={5} className="muted">No people yet.</td></tr>}
+        </tbody>
+      </table>
+
+      {editing && (
+        <Modal title={`Edit ${editing.name}`} onClose={() => setEditing(null)}>
+          <form
+            className="stack"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                await api(`/admin/people/${editing.id}`, { method: "PATCH", body: editing });
+                setEditing(null);
+                changed();
+              } catch (err) {
+                setError(errorText(err));
+              }
+            }}
+          >
+            <label className="field"><span>Name</span><input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} required maxLength={120} /></label>
+            <label className="field"><span>Email</span><input type="email" value={editing.email} onChange={(e) => setEditing({ ...editing, email: e.target.value })} /></label>
+            <label className="field"><span>Role</span><input value={editing.role} onChange={(e) => setEditing({ ...editing, role: e.target.value })} maxLength={120} /></label>
+            <label className="check"><input type="checkbox" checked={editing.active} onChange={(e) => setEditing({ ...editing, active: e.target.checked })} /> Active (shown in the dropdown)</label>
+            <div className="actions">
+              <button type="button" className="btn ghost" onClick={() => setEditing(null)}>Cancel</button>
+              <button className="btn primary">Save</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {linkModal && (
+        <Modal title={linkModal.title} onClose={() => setLinkModal(null)}>
+          <div className="stack">
+            <p>{linkModal.note}</p>
+            <CopyLink url={linkModal.url} />
+            <p className="warn-text small-text">Copy it now. For security it won't be shown again.</p>
+            <div className="actions"><button className="btn primary" onClick={() => setLinkModal(null)}>Done</button></div>
+          </div>
+        </Modal>
+      )}
+
+      {importing && (
+        <Modal title="Import people" onClose={() => setImporting(false)}>
+          <form
+            className="stack"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                const r = await api<{ added: number; skipped: string[] }>(`/admin/teams/${team.id}/people/import`, { body: { text: importText } });
+                setMsg(`Added ${r.added}.${r.skipped.length ? ` Skipped ${r.skipped.length}: ${r.skipped.slice(0, 5).join("; ")}${r.skipped.length > 5 ? "…" : ""}` : ""}`);
+                setImporting(false);
+                setImportText("");
+                changed();
+              } catch (err) {
+                setError(errorText(err));
+              }
+            }}
+          >
+            <p>One person per line: <code>Name, email, role</code>. Email and role are optional. You can paste straight from a spreadsheet.</p>
+            <textarea rows={10} value={importText} onChange={(e) => setImportText(e.target.value)} placeholder={"Priya Patel, priya@example.ca, Peer Educator\nSam Lee"} required />
+            <div className="actions">
+              <button type="button" className="btn ghost" onClick={() => setImporting(false)}>Cancel</button>
+              <button className="btn primary">Import</button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </section>
   );
 }

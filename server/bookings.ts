@@ -314,7 +314,7 @@ async function insertOccurrences(
 export async function createBooking(
   team: TeamRow,
   raw: Partial<BookingInput>,
-  opts: { admin: boolean; ip: string; actor: Actor },
+  opts: { admin: boolean; ip: string; actor: Actor; accountId?: number },
 ): Promise<CreateResult> {
   const input = parseBookingInput(raw, team, opts.admin);
   return tx(async (client) => {
@@ -323,9 +323,9 @@ export async function createBooking(
     const ok = selectBookable(occs, truncated, status === "pending");
     const token = randomToken(32);
     const series = await one<{ id: number }>(
-      `INSERT INTO booking_series (team_id, manage_token, recurrence, created_by_admin, creator_ip)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [team.id, token, input.recurrence ? JSON.stringify(input.recurrence) : null, opts.admin, opts.ip],
+      `INSERT INTO booking_series (team_id, manage_token, recurrence, created_by_admin, creator_ip, account_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [team.id, token, input.recurrence ? JSON.stringify(input.recurrence) : null, opts.admin, opts.ip, opts.accountId ?? null],
       client,
     );
     await insertOccurrences(client, team.id, series!.id, input, ok, status);
