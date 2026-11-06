@@ -114,9 +114,15 @@ function Dashboard({ account, teams }: { account: Account; teams: MyTeam[] }) {
   return (
     <div className="dash-shell" style={style}>
       <header className="dash-top">
-        <Link to="/" className="wordmark dark">
-          <span className="mark" aria-hidden />
-          Room Scheduler
+        <Link to={team ? `/?team=${team.id}` : "/"} className="dash-brand" aria-label={team ? `${team.name} — dashboard` : "Dashboard"}>
+          {team?.logoDataUrl ? (
+            <img src={team.logoDataUrl} alt={team.name} className="dash-logo" />
+          ) : (
+            <>
+              <span className="mark" aria-hidden />
+              <span className="dash-brand-name">{team?.name ?? "Room Scheduler"}</span>
+            </>
+          )}
         </Link>
         <div className="dash-user">
           {account.isAdmin && (

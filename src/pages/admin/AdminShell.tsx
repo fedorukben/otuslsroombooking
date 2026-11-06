@@ -50,6 +50,7 @@ export function AdminShell({ children, bare = false }: { children: ReactNode; ba
             Room Scheduler <em>admin</em>
           </Link>
           <nav aria-label="Admin">
+            <Link to="/" className="back-dash">← Dashboard</Link>
             <NavLink to="/admin" end>
               Teams
             </NavLink>
