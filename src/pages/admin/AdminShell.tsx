@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type FormE
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { api, errorText } from "../../api";
 import { Modal } from "../../components/Modal";
+import { LogoMark, Wordmark } from "../../components/AppLogo";
 import type { TransferOffer } from "../../../shared/types";
 
 type Transfer = (TransferOffer & { direction: "in" | "out" }) | null;
@@ -46,8 +47,7 @@ export function AdminShell({ children, bare = false }: { children: ReactNode; ba
       <div className="admin-shell">
         {!bare && <header className="admin-bar">
           <Link to="/admin" className="wordmark">
-            <span className="mark" aria-hidden />
-            Room Scheduler <em>admin</em>
+            <Wordmark size={30} bare sub="admin" />
           </Link>
           <nav aria-label="Admin">
             <Link to="/" className="back-dash">← Dashboard</Link>
@@ -96,7 +96,7 @@ function AuthCard({ title, children, onSubmit }: { title: string; children: Reac
   return (
     <main className="center-page auth">
       <form className="card narrow" onSubmit={onSubmit}>
-        <p className="eyebrow">Room Scheduler</p>
+        <div className="card-brand"><LogoMark size={40} /><p className="eyebrow">Room Scheduler</p></div>
         <h1>{title}</h1>
         {children}
       </form>

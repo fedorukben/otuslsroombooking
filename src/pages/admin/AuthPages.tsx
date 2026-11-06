@@ -1,12 +1,13 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, errorText } from "../../api";
+import { LogoMark } from "../../components/AppLogo";
 
 function Shell({ title, children }: { title: string; children: ReactNode }) {
   return (
     <main className="center-page auth">
       <div className="card narrow">
-        <p className="eyebrow">Room Scheduler</p>
+        <div className="card-brand"><LogoMark size={40} /><p className="eyebrow">Room Scheduler</p></div>
         <h1>{title}</h1>
         {children}
       </div>

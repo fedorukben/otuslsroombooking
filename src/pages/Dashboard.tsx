@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { CalendarBooking, MyBooking, MyTeam } from "../../shared/types";
 import { adminEndpoints, api, ApiError, errorText, staffEndpoints } from "../api";
 import { Modal } from "../components/Modal";
+import { LogoMark } from "../components/AppLogo";
 import { fmtTime, onColor } from "../lib/time";
 
 export const CAMPUS_MAP_URL = "https://ontariotechu.ca/map/";
@@ -51,7 +52,7 @@ function SignIn({ onDone }: { onDone: () => void }) {
   return (
     <main className="signin-page">
       <section className="signin-hero">
-        <p className="eyebrow">Room Scheduler</p>
+        <div className="hero-brand"><LogoMark size={64} /><p className="eyebrow">Room Scheduler</p></div>
         <h1>
           Book the room.
           <br />
@@ -119,7 +120,7 @@ function Dashboard({ account, teams }: { account: Account; teams: MyTeam[] }) {
             <img src={team.logoDataUrl} alt={team.name} className="dash-logo" />
           ) : (
             <>
-              <span className="mark" aria-hidden />
+              <LogoMark size={40} />
               <span className="dash-brand-name">{team?.name ?? "Room Scheduler"}</span>
             </>
           )}
