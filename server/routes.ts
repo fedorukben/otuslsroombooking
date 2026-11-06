@@ -526,7 +526,9 @@ async function roomForAdmin(req: Request, roomId: number) {
 router.post("/admin/teams/:id/rooms", async ({ req, params, ip }) => {
   const me = await requireTeamAdmin(req, Number(params.id));
   const team = await teamById(Number(params.id));
-  const { cols, params: p } = upsertColumns({ ...(await parseRoom(await body(req), team)), team_id: team.id });
+  const parsed = await parseRoom(await body(req), team);
+  await ensureLocation(team.id, parsed.campus, parsed.building);
+  const { cols, params: p } = upsertColumns({ ...parsed, team_id: team.id });
   const row = await one<RoomRow>(
     `INSERT INTO rooms (${cols.join(",")}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(",")}) RETURNING *`,
     p,
@@ -539,6 +541,7 @@ router.patch("/admin/rooms/:id", async ({ req, params, ip }) => {
   const { room: existing, me } = await roomForAdmin(req, Number(params.id));
   const team = await teamById(existing.team_id);
   const values = await parseRoom(await body(req), team);
+  await ensureLocation(team.id, values.campus, values.building);
   const { cols, params: p } = upsertColumns(values);
   const row = await one<RoomRow>(
     `UPDATE rooms SET ${cols.map((c, i) => `${c} = $${i + 1}`).join(", ")} WHERE id = $${cols.length + 1} RETURNING *`,
@@ -1499,4 +1502,144 @@ router.post("/s/teams/:id/free", async ({ req, params, ip }) => {
   const { team } = await staffTeam(req, Number(params.id));
   await rateLimit(`free:${ip}`, 200, 3600);
   return json(await findFree(team, await body(req), false));
+});
+
+// =====================================================================
+// Locations: campus and building lists (per team), and ordering
+// =====================================================================
+
+interface CampusRow { id: number; team_id: number; name: string; sort_order: number }
+interface BuildingRow { id: number; team_id: number; campus_id: number | null; name: string; code: string; sort_order: number }
+
+async function locations(teamId: number) {
+  const campuses = await q<CampusRow & { room_count: number }>(
+    `SELECT c.*, (SELECT COUNT(*)::int FROM rooms r WHERE r.team_id = c.team_id AND lower(r.campus) = lower(c.name)) AS room_count
+       FROM campuses c WHERE c.team_id = $1 ORDER BY c.sort_order, lower(c.name)`,
+    [teamId],
+  );
+  const buildings = await q<BuildingRow & { room_count: number }>(
+    `SELECT b.*, (SELECT COUNT(*)::int FROM rooms r WHERE r.team_id = b.team_id AND lower(r.building) = lower(b.name)) AS room_count
+       FROM buildings b WHERE b.team_id = $1 ORDER BY b.sort_order, lower(b.name)`,
+    [teamId],
+  );
+  return {
+    campuses: campuses.map((c) => ({ id: c.id, name: c.name, roomCount: c.room_count })),
+    buildings: buildings.map((b) => ({ id: b.id, name: b.name, code: b.code, campusId: b.campus_id, roomCount: b.room_count })),
+  };
+}
+
+/** Keeps the lists in step with rooms: a campus/building typed on a room is added to the list. */
+async function ensureLocation(teamId: number, campus: string, building: string) {
+  let campusId: number | null = null;
+  if (campus) {
+    await q("INSERT INTO campuses (team_id, name, sort_order) VALUES ($1, $2, 1000) ON CONFLICT DO NOTHING", [teamId, campus]);
+    campusId = (await one<{ id: number }>("SELECT id FROM campuses WHERE team_id = $1 AND lower(name) = lower($2)", [teamId, campus]))?.id ?? null;
+  }
+  if (building) {
+    await q("INSERT INTO buildings (team_id, name, campus_id, sort_order) VALUES ($1, $2, $3, 1000) ON CONFLICT DO NOTHING", [teamId, building, campusId]);
+  }
+}
+
+router.get("/admin/teams/:id/locations", async ({ req, params }) => {
+  await requireTeamAdmin(req, Number(params.id));
+  return json(await locations(Number(params.id)));
+});
+
+router.post("/admin/teams/:id/campuses", async ({ req, params, ip }) => {
+  const teamId = Number(params.id);
+  const me = await requireTeamAdmin(req, teamId);
+  const name = str((await body(req)).name, "Campus name", { required: true, max: 120 });
+  const n = await one<{ n: number }>("SELECT COUNT(*)::int AS n FROM campuses WHERE team_id = $1", [teamId]);
+  await q("INSERT INTO campuses (team_id, name, sort_order) VALUES ($1, $2, $3)", [teamId, name, n!.n]);
+  await logActivity({ teamId, action: "location.create", summary: `Added campus ${name}`, actor: adminActor(me, ip) });
+  return json(await locations(teamId), 201);
+});
+
+router.post("/admin/teams/:id/buildings", async ({ req, params, ip }) => {
+  const teamId = Number(params.id);
+  const me = await requireTeamAdmin(req, teamId);
+  const b = await body(req);
+  const name = str(b.name, "Building name", { required: true, max: 120 });
+  const code = str(b.code, "Building code", { max: 20 });
+  const campusId = b.campusId ? Number(b.campusId) : null;
+  if (campusId && !(await one("SELECT 1 FROM campuses WHERE id = $1 AND team_id = $2", [campusId, teamId]))) throw bad("That campus isn't in this team.");
+  const n = await one<{ n: number }>("SELECT COUNT(*)::int AS n FROM buildings WHERE team_id = $1", [teamId]);
+  await q("INSERT INTO buildings (team_id, name, code, campus_id, sort_order) VALUES ($1, $2, $3, $4, $5)", [teamId, name, code, campusId, n!.n]);
+  await logActivity({ teamId, action: "location.create", summary: `Added building ${name}`, actor: adminActor(me, ip) });
+  return json(await locations(teamId), 201);
+});
+
+router.patch("/admin/campuses/:id", async ({ req, params, ip }) => {
+  const c = await one<CampusRow>("SELECT * FROM campuses WHERE id = $1", [Number(params.id)]);
+  if (!c) throw notFound("Campus not found.");
+  const me = await requireTeamAdmin(req, c.team_id);
+  const name = str((await body(req)).name, "Campus name", { required: true, max: 120 });
+  await tx(async (client) => {
+    await client.query("UPDATE campuses SET name = $1 WHERE id = $2", [name, c.id]);
+    await client.query("UPDATE rooms SET campus = $1 WHERE team_id = $2 AND lower(campus) = lower($3)", [name, c.team_id, c.name]);
+  });
+  if (name !== c.name) await logActivity({ teamId: c.team_id, action: "location.update", summary: `Renamed campus ${c.name} to ${name} (rooms updated)`, actor: adminActor(me, ip) });
+  return json(await locations(c.team_id));
+});
+
+router.patch("/admin/buildings/:id", async ({ req, params, ip }) => {
+  const bld = await one<BuildingRow>("SELECT * FROM buildings WHERE id = $1", [Number(params.id)]);
+  if (!bld) throw notFound("Building not found.");
+  const me = await requireTeamAdmin(req, bld.team_id);
+  const b = await body(req);
+  const name = str(b.name, "Building name", { required: true, max: 120 });
+  const code = str(b.code, "Building code", { max: 20 });
+  const campusId = b.campusId ? Number(b.campusId) : null;
+  const campus = campusId ? await one<CampusRow>("SELECT * FROM campuses WHERE id = $1 AND team_id = $2", [campusId, bld.team_id]) : null;
+  if (campusId && !campus) throw bad("That campus isn't in this team.");
+  await tx(async (client) => {
+    await client.query("UPDATE buildings SET name = $1, code = $2, campus_id = $3 WHERE id = $4", [name, code, campusId, bld.id]);
+    // Rooms in this building follow its new name and campus.
+    await client.query("UPDATE rooms SET building = $1, campus = COALESCE($2, campus) WHERE team_id = $3 AND lower(building) = lower($4)", [
+      name,
+      campus?.name ?? null,
+      bld.team_id,
+      bld.name,
+    ]);
+  });
+  await logActivity({ teamId: bld.team_id, action: "location.update", summary: `Changed building ${bld.name}${name !== bld.name ? ` → ${name}` : ""}${campus ? ` (${campus.name})` : ""}`, actor: adminActor(me, ip) });
+  return json(await locations(bld.team_id));
+});
+
+router.delete("/admin/campuses/:id", async ({ req, params, ip }) => {
+  const c = await one<CampusRow>("SELECT * FROM campuses WHERE id = $1", [Number(params.id)]);
+  if (!c) throw notFound("Campus not found.");
+  const me = await requireTeamAdmin(req, c.team_id);
+  const used = await one<{ n: number }>("SELECT COUNT(*)::int AS n FROM rooms WHERE team_id = $1 AND lower(campus) = lower($2)", [c.team_id, c.name]);
+  if (used!.n) throw bad(`${used!.n} room${used!.n === 1 ? " is" : "s are"} on this campus. Move ${used!.n === 1 ? "it" : "them"} first.`);
+  await q("DELETE FROM campuses WHERE id = $1", [c.id]);
+  await logActivity({ teamId: c.team_id, action: "location.delete", summary: `Removed campus ${c.name}`, actor: adminActor(me, ip) });
+  return json(await locations(c.team_id));
+});
+
+router.delete("/admin/buildings/:id", async ({ req, params, ip }) => {
+  const bld = await one<BuildingRow>("SELECT * FROM buildings WHERE id = $1", [Number(params.id)]);
+  if (!bld) throw notFound("Building not found.");
+  const me = await requireTeamAdmin(req, bld.team_id);
+  const used = await one<{ n: number }>("SELECT COUNT(*)::int AS n FROM rooms WHERE team_id = $1 AND lower(building) = lower($2)", [bld.team_id, bld.name]);
+  if (used!.n) throw bad(`${used!.n} room${used!.n === 1 ? " is" : "s are"} in this building. Move ${used!.n === 1 ? "it" : "them"} first.`);
+  await q("DELETE FROM buildings WHERE id = $1", [bld.id]);
+  await logActivity({ teamId: bld.team_id, action: "location.delete", summary: `Removed building ${bld.name}`, actor: adminActor(me, ip) });
+  return json(await locations(bld.team_id));
+});
+
+/** Saves a drag-and-drop order. kind = categories | campuses | buildings. */
+router.post("/admin/teams/:id/order/:kind", async ({ req, params, ip }) => {
+  const teamId = Number(params.id);
+  const me = await requireTeamAdmin(req, teamId);
+  const table = ({ categories: "categories", campuses: "campuses", buildings: "buildings" } as Record<string, string>)[params.kind];
+  if (!table) throw notFound();
+  const ids = ((await body(req)).ids ?? []).map(Number).filter(Number.isInteger);
+  await tx(async (client) => {
+    for (const [i, id] of ids.entries()) {
+      await client.query(`UPDATE ${table} SET sort_order = $1 WHERE id = $2 AND team_id = $3`, [i, id, teamId]);
+    }
+  });
+  await logActivity({ teamId, action: `${params.kind === "categories" ? "category" : "location"}.reorder`, summary: `Reordered ${params.kind}`, actor: adminActor(me, ip) });
+  return json({ ok: true });
 });

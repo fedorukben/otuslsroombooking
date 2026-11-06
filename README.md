@@ -96,6 +96,10 @@ Nothing changes until the other admin accepts. They type `ACCEPT SUPER ADMIN` an
 
 **People:** each team has a People tab listing the staff who book. Admins are added automatically. You can add people one at a time or paste a list (`Name, email, role` per line). The booking form shows the list as a dropdown and fills in the person's email automatically; members only see names. In Settings you can require staff to choose a name from the list, and admins can still book for anyone.
 
+**Locations:** each team keeps its own list of campuses and buildings at the bottom of the Rooms tab. Buildings have an optional short code and belong to a campus. In the room form you choose a campus, then a building on that campus, or add a new one right there. Renaming a campus or building updates every room that uses it, and one that rooms still use can't be removed.
+
+**Ordering:** categories, campuses and buildings can be dragged into order with the handle (⋮⋮). It works with a mouse or touch, or focus the handle and use the arrow keys. Category order is what staff see in the booking form and the calendar legend.
+
 **Rules enforced on the server:** opening hours, closures, time steps, minimum and maximum length, how far ahead people can book, buffer between bookings, capacity (warn or block), allowed categories, and no bookings in the past. Admins can tick **Override** to bypass these rules. Nobody can bypass overlaps: a Postgres exclusion constraint makes double-booking a room impossible, even when two people click "Book" at the same moment.
 
 **Approval rooms:** new bookings are created as **Pending**, which already holds the time slot. Admins approve or decline them on the **Approvals** tab.
@@ -124,7 +128,7 @@ The API test suite runs against any Postgres 14+ that has the `btree_gist` exten
 tests/reset-db.sh postgres://postgres@localhost:5432      # creates rooms_test and applies migrations
 ROOMS_DB_URL=postgres://postgres@localhost:5432/rooms_test npm test
 ```
-It covers recurrence expansion, sign-in, every booking rule, simultaneous double-booking attempts, closures, recurring create/edit/cancel, privacy masking, approvals, admin override, daylight saving time, PINs, free-room search, calendar feeds, the activity log, and super-admin vs. team-admin permissions invite and reset links, super admin recovery, people lists, and the super admin handover, and staff sign-in (152 checks).
+It covers recurrence expansion, sign-in, every booking rule, simultaneous double-booking attempts, closures, recurring create/edit/cancel, privacy masking, approvals, admin override, daylight saving time, PINs, free-room search, calendar feeds, the activity log, and super-admin vs. team-admin permissions invite and reset links, super admin recovery, people lists, and the super admin handover, staff sign-in, locations, and ordering (159 checks).
 
 You can also run the API on its own and point Vite at it:
 ```bash

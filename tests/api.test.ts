@@ -386,6 +386,31 @@ async function main() {
     cookie = superCookie;
 
 
+
+    console.log("Locations and ordering");
+    r = await call("GET", `/admin/teams/${team.id}/locations`);
+    check("rooms' campuses/buildings appear in the lists", r.body.campuses.some((c: any) => c.name === "North Oshawa" && c.roomCount === 1) && r.body.buildings.some((b: any) => b.name === "SIRC"), r.body);
+    r = await call("POST", `/admin/teams/${team.id}/campuses`, { name: "Downtown" });
+    const downtown = r.body.campuses.find((c: any) => c.name === "Downtown");
+    r = await call("POST", `/admin/teams/${team.id}/buildings`, { name: "Charles Hall", code: "CHA", campusId: downtown.id });
+    check("building added under a campus", r.body.buildings.some((b: any) => b.name === "Charles Hall" && b.campusId === downtown.id), r.body);
+    const sirc = r.body.buildings.find((b: any) => b.name === "SIRC");
+    r = await call("PATCH", `/admin/buildings/${sirc.id}`, { name: "Shawenjigewining Hall", code: "SHA", campusId: r.body.campuses.find((c: any) => c.name === "North Oshawa").id });
+    r = await call("GET", `/admin/teams/${team.id}`);
+    check("renaming a building updates its rooms", r.body.rooms.find((x: any) => x.id === room.id).building === "Shawenjigewining Hall", r.body.rooms[0]);
+    const nOsh = (await call("GET", `/admin/teams/${team.id}/locations`)).body.campuses.find((c: any) => c.name === "North Oshawa");
+    r = await call("DELETE", `/admin/campuses/${nOsh.id}`);
+    check("can't remove a campus rooms still use", r.status === 400, r.body);
+    r = await call("POST", `/admin/teams/${team.id}/rooms`, { name: "New Room", hours, building: "Brand New Hall", campus: "Downtown" });
+    r = await call("GET", `/admin/teams/${team.id}/locations`);
+    check("a new building typed on a room joins the list under its campus", r.body.buildings.some((b: any) => b.name === "Brand New Hall" && b.campusId === downtown.id), r.body.buildings);
+    const catIds = cats.map((c: any) => c.id).reverse();
+    r = await call("POST", `/admin/teams/${team.id}/order/categories`, { ids: catIds });
+    r = await call("GET", T, undefined, {}, false);
+    check("category order is saved and used everywhere", r.body.categories.map((c: any) => c.id).join() === catIds.join(), r.body.categories.map((c: any) => c.name));
+    r = await call("POST", `/admin/teams/${team.id}/order/nonsense`, { ids: [] });
+    check("unknown order list rejected", r.status === 404);
+
     console.log("Staff sign-in and dashboard");
     r = await call("GET", `/admin/teams/${team.id}/people`);
     const priya = r.body.people.find((p: any) => p.name === "Priya Patel");

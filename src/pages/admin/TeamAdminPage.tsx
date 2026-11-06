@@ -11,6 +11,13 @@ import { RulesFields, TimezoneSelect } from "./fields";
 import { ActivityList } from "../../components/ActivityList";
 import { SubscribeModal } from "../../components/SubscribeModal";
 import { useAdmin } from "./AdminShell";
+import { SortableList } from "../../components/SortableList";
+import { RowMenu } from "../../components/RowMenu";
+
+export interface Locations {
+  campuses: { id: number; name: string; roomCount: number }[];
+  buildings: { id: number; name: string; code: string; campusId: number | null; roomCount: number }[];
+}
 
 interface Data {
   team: AdminTeam;
@@ -26,7 +33,8 @@ type Tab = (typeof TABS)[number];
 export function TeamAdminPage() {
   const { id = "" } = useParams();
   const [params, setParams] = useSearchParams();
-  const tab = (TABS.includes(params.get("tab") as Tab) ? params.get("tab") : "calendar") as Tab;
+  const rawTab = params.get("tab") === "locations" ? "rooms" : params.get("tab");
+  const tab = (TABS.includes(rawTab as Tab) ? rawTab : "calendar") as Tab;
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState("");
 
@@ -194,6 +202,11 @@ function RoomsTab({ data, onChange }: { data: Data; onChange: () => void }) {
   const { team, rooms, categories } = data;
   const [draft, setDraft] = useState<RoomDraft | null>(null);
   const [error, setError] = useState("");
+  const [locs, setLocs] = useState<Locations>({ campuses: [], buildings: [] });
+  const loadLocs = useCallback(() => {
+    api<Locations>(`/admin/teams/${team.id}/locations`).then(setLocs).catch(() => undefined);
+  }, [team.id]);
+  useEffect(loadLocs, [loadLocs]);
 
   const remove = async (r: Room) => {
     if (!confirm(`Delete ${r.name}? All of its bookings (past and future) will be deleted too. To keep history, mark it inactive instead.`)) return;
@@ -245,9 +258,14 @@ function RoomsTab({ data, onChange }: { data: Data; onChange: () => void }) {
               </td>
             </tr>
           ))}
+          {!rooms.length && <tr><td colSpan={6} className="muted">No rooms yet. Add your campuses and buildings below, then add a room.</td></tr>}
         </tbody>
       </table>
-      {draft && <RoomEditor team={team} categories={categories} rooms={rooms} draft={draft} onClose={() => setDraft(null)} onSaved={() => { setDraft(null); onChange(); }} />}
+      <div className="section-divider" id="locations">
+        <h2>Campuses and buildings</h2>
+      </div>
+      <LocationsTab team={team} onChange={() => { onChange(); loadLocs(); }} />
+      {draft && <RoomEditor team={team} categories={categories} locs={locs} onLocs={setLocs} draft={draft} onClose={() => setDraft(null)} onSaved={() => { setDraft(null); onChange(); loadLocs(); }} />}
     </section>
   );
 }
@@ -255,14 +273,16 @@ function RoomsTab({ data, onChange }: { data: Data; onChange: () => void }) {
 function RoomEditor({
   team,
   categories,
-  rooms,
+  locs,
+  onLocs,
   draft,
   onClose,
   onSaved,
 }: {
   team: AdminTeam;
   categories: Category[];
-  rooms: Room[];
+  locs: Locations;
+  onLocs: (l: Locations) => void;
   draft: RoomDraft;
   onClose: () => void;
   onSaved: () => void;
@@ -270,7 +290,30 @@ function RoomEditor({
   const [r, setR] = useState<RoomDraft>(draft);
   const [error, setError] = useState("");
   const set = <K extends keyof RoomDraft>(k: K, v: RoomDraft[K]) => setR((p) => ({ ...p, [k]: v }));
-  const known = (k: "campus" | "building") => [...new Set(rooms.map((x) => x[k]).filter(Boolean))];
+  const [adding, setAdding] = useState<"campus" | "building" | null>(null);
+  const [newName, setNewName] = useState("");
+  const campusOf = (bName: string) => {
+    const b = locs.buildings.find((x) => x.name.toLowerCase() === bName.toLowerCase());
+    return b?.campusId ? locs.campuses.find((c) => c.id === b.campusId)?.name ?? "" : "";
+  };
+  const campusId = locs.campuses.find((c) => c.name.toLowerCase() === r.campus.toLowerCase())?.id ?? null;
+  const buildingOptions = locs.buildings.filter((b) => !r.campus || b.campusId === campusId || b.campusId === null);
+  const addLocation = async () => {
+    const name = newName.trim();
+    if (!name || !adding) return;
+    try {
+      const next = await api<Locations>(`/admin/teams/${team.id}/${adding === "campus" ? "campuses" : "buildings"}`, {
+        body: adding === "campus" ? { name } : { name, campusId },
+      });
+      onLocs(next);
+      if (adding === "campus") setR((p) => ({ ...p, campus: name, building: "" }));
+      else setR((p) => ({ ...p, building: name }));
+      setAdding(null);
+      setNewName("");
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -300,19 +343,60 @@ function RoomEditor({
             <input type="number" min={1} value={r.capacity ?? ""} onChange={(e) => set("capacity", e.target.value ? Number(e.target.value) : null)} />
           </label>
           <label className="field">
+            <span>Campus</span>
+            <select
+              value={locs.campuses.some((c) => c.name.toLowerCase() === r.campus.toLowerCase()) ? locs.campuses.find((c) => c.name.toLowerCase() === r.campus.toLowerCase())!.name : r.campus ? "__keep" : ""}
+              onChange={(e) => {
+                if (e.target.value === "__add") { setAdding("campus"); setNewName(""); return; }
+                if (e.target.value === "__keep") return;
+                setR((p) => ({ ...p, campus: e.target.value, building: e.target.value && campusOf(p.building) && campusOf(p.building) !== e.target.value ? "" : p.building }));
+              }}
+            >
+              <option value="">No campus</option>
+              {r.campus && !locs.campuses.some((c) => c.name.toLowerCase() === r.campus.toLowerCase()) && <option value="__keep">{r.campus}</option>}
+              {locs.campuses.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+              <option value="__add">+ Add a new campus…</option>
+            </select>
+          </label>
+          <label className="field">
             <span>Building</span>
-            <input list="buildings" value={r.building} onChange={(e) => set("building", e.target.value)} maxLength={120} />
-            <datalist id="buildings">{known("building").map((b) => <option key={b} value={b} />)}</datalist>
+            <select
+              value={locs.buildings.some((b) => b.name.toLowerCase() === r.building.toLowerCase()) ? locs.buildings.find((b) => b.name.toLowerCase() === r.building.toLowerCase())!.name : r.building ? "__keep" : ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "__add") { setAdding("building"); setNewName(""); return; }
+                if (v === "__keep") return;
+                const c = campusOf(v);
+                setR((p) => ({ ...p, building: v, campus: c || p.campus }));
+              }}
+            >
+              <option value="">No building</option>
+              {r.building && !locs.buildings.some((b) => b.name.toLowerCase() === r.building.toLowerCase()) && <option value="__keep">{r.building}</option>}
+              {buildingOptions.map((b) => <option key={b.id} value={b.name}>{b.name}{b.code ? ` (${b.code})` : ""}</option>)}
+              <option value="__add">+ Add a new building…</option>
+            </select>
+            {r.campus && <small className="hint">Showing buildings on {r.campus}.</small>}
           </label>
           <label className="field">
             <span>Floor <em className="opt">optional</em></span>
             <input value={r.floor} onChange={(e) => set("floor", e.target.value)} maxLength={40} />
           </label>
-          <label className="field">
-            <span>Campus</span>
-            <input list="campuses" value={r.campus} onChange={(e) => set("campus", e.target.value)} maxLength={120} />
-            <datalist id="campuses">{known("campus").map((c) => <option key={c} value={c} />)}</datalist>
-          </label>
+          {adding && (
+            <div className="add-location full">
+              <label className="field inline">
+                <span>New {adding}{adding === "building" && r.campus ? ` on ${r.campus}` : ""}</span>
+                <input
+                  autoFocus
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLocation(); } if (e.key === "Escape") { e.stopPropagation(); setAdding(null); } }}
+                  maxLength={120}
+                />
+              </label>
+              <button type="button" className="btn small primary" onClick={addLocation}>Add</button>
+              <button type="button" className="btn small ghost" onClick={() => setAdding(null)}>Cancel</button>
+            </div>
+          )}
         </div>
         <label className="field">
           <span>Description <em className="opt">room type, features, equipment, accessibility notes, directions</em></span>
@@ -393,8 +477,20 @@ function CategoriesTab({ team, categories, onChange }: { team: AdminTeam; catego
     <section className="narrow-section">
       <p className="muted">Categories colour the calendar. Inactive categories can't be chosen for new bookings but stay on old ones.</p>
       {error && <p className="error">{error}</p>}
-      <ul className="cat-list">
-        {categories.map((c) => (
+      <p className="hint">Drag the handle to change the order categories appear in the booking form and the calendar legend.</p>
+      <SortableList
+        className="cat-list"
+        items={categories}
+        label={(c) => c.name}
+        onReorder={async (ids) => {
+          try {
+            await api(`/admin/teams/${team.id}/order/categories`, { body: { ids } });
+            onChange();
+          } catch (e) {
+            setError(errorText(e));
+          }
+        }}
+        render={(c) => (
           <CategoryRow key={`${c.id}-${c.name}-${c.color}-${c.active}`} c={c} onSave={save} onDelete={async () => {
             if (!confirm(`Delete "${c.name}"?`)) return;
             try {
@@ -404,8 +500,8 @@ function CategoriesTab({ team, categories, onChange }: { team: AdminTeam; catego
               setError(errorText(e));
             }
           }} />
-        ))}
-      </ul>
+        )}
+      />
       <form
         className="row wrap add-row"
         onSubmit={async (e) => {
@@ -431,7 +527,7 @@ function CategoryRow({ c, onSave, onDelete }: { c: Category; onSave: (c: Categor
   const [d, setD] = useState(c);
   const dirty = d.name !== c.name || d.color !== c.color || d.active !== c.active;
   return (
-    <li className={d.active ? "" : "dim"}>
+    <div className={`cat-row ${d.active ? "" : "dim"}`}>
       <input type="color" aria-label={`${c.name} colour`} value={d.color} onChange={(e) => setD({ ...d, color: e.target.value })} />
       <input aria-label="Category name" value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} maxLength={60} />
       <label className="check">
@@ -439,7 +535,7 @@ function CategoryRow({ c, onSave, onDelete }: { c: Category; onSave: (c: Categor
       </label>
       {dirty && <button className="btn small primary" onClick={() => onSave(d)}>Save</button>}
       <button className="btn small ghost danger" onClick={onDelete}>Delete</button>
-    </li>
+    </div>
   );
 }
 
@@ -754,7 +850,7 @@ function PeopleTab({ team, onChange }: { team: AdminTeam; onChange: () => void }
   };
 
   return (
-    <section className="narrow-section">
+    <section className="people-section">
       <p className="muted">
         The people who book rooms for this team. They appear as a dropdown on the booking form, and their email is filled in automatically.
         Use <strong>Give sign-in</strong> to send someone an invite to their own account; they then book from their dashboard.
@@ -785,54 +881,61 @@ function PeopleTab({ team, onChange }: { team: AdminTeam; onChange: () => void }
         <input type="search" placeholder="Search people…" aria-label="Search people" value={search} onChange={(e) => setSearch(e.target.value)} style={{ maxWidth: 320 }} />
         <button className="btn" onClick={() => setImporting(true)}>Import a list…</button>
       </div>
-      <table className="table">
-        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sign-in</th><th><span className="sr-only">Actions</span></th></tr></thead>
+      <table className="table people-table">
+        <thead><tr><th>Person</th><th>Email</th><th>Sign-in</th><th><span className="sr-only">Actions</span></th></tr></thead>
         <tbody>
           {shown.map((p) => (
             <tr key={p.id} className={p.active ? "" : "dim"}>
-              <td><strong>{p.name}</strong>{p.isAdmin && <span className="badge">Admin</span>}</td>
-              <td>{p.email || "—"}</td>
-              <td>{p.role || "—"}</td>
               <td>
-                {p.hasLogin ? <span className="badge ok">Can sign in</span> : p.invitePending ? <span className="badge amber">Invite sent</span> : <span className="muted small-text">—</span>}
-                {!p.active && <span className="badge">Inactive</span>}
+                <div className="person-name">
+                  <strong>{p.name}</strong>
+                  {p.isAdmin && <span className="badge">Admin</span>}
+                  {!p.active && <span className="badge">Inactive</span>}
+                </div>
+                {p.role && <div className="person-role">{p.role}</div>}
               </td>
-              <td className="right">
-                {!p.hasLogin && (
-                  <>
-                    <button className="btn small primary" onClick={() => giveAccess(p)}>{p.invitePending ? "New invite link" : "Give sign-in"}</button>{" "}
-                  </>
+              <td className="email-cell">{p.email ? <span title={p.email}>{p.email}</span> : <span className="muted">No email</span>}</td>
+              <td className="nowrap">
+                {p.hasLogin ? <span className="badge ok">Can sign in</span> : p.invitePending ? <span className="badge amber">Invite sent</span> : <span className="muted small-text">Not yet</span>}
+              </td>
+              <td className="right actions-cell">
+                {!p.hasLogin ? (
+                  <button className="btn small primary" onClick={() => giveAccess(p)}>{p.invitePending ? "New invite link" : "Give sign-in"}</button>
+                ) : (
+                  <button className="btn small" onClick={() => setEditing(p)}>Edit</button>
                 )}
-                {p.hasLogin && !p.isAdmin && (
-                  <>
-                    <button className="btn small" onClick={() => resetLink(p)}>Reset password</button>{" "}
-                    <button
-                      className="btn small ghost"
-                      onClick={async () => {
-                        if (!confirm(`Remove ${p.name}'s sign-in for this team? They stay on the list and their bookings are unchanged.`)) return;
-                        await api(`/admin/people/${p.id}/access`, { method: "DELETE" }).catch((e) => setError(errorText(e)));
+                <RowMenu
+                  label={`More actions for ${p.name}`}
+                  items={[
+                    ...(!p.hasLogin ? [{ label: "Edit", onSelect: () => setEditing(p) }] : []),
+                    ...(p.hasLogin && !p.isAdmin
+                      ? [
+                          { label: "Reset password link", onSelect: () => resetLink(p) },
+                          {
+                            label: "Remove sign-in",
+                            onSelect: async () => {
+                              if (!confirm(`Remove ${p.name}'s sign-in for this team? They stay on the list and their bookings are unchanged.`)) return;
+                              await api(`/admin/people/${p.id}/access`, { method: "DELETE" }).catch((e) => setError(errorText(e)));
+                              changed();
+                            },
+                          },
+                        ]
+                      : []),
+                    {
+                      label: "Remove from list",
+                      danger: true,
+                      onSelect: async () => {
+                        if (!confirm(`Remove ${p.name} from the list? Their existing bookings stay as they are.`)) return;
+                        await api(`/admin/people/${p.id}`, { method: "DELETE" }).catch((e) => setError(errorText(e)));
                         changed();
-                      }}
-                    >
-                      Remove sign-in
-                    </button>{" "}
-                  </>
-                )}
-                <button className="btn small" onClick={() => setEditing(p)}>Edit</button>{" "}
-                <button
-                  className="btn small ghost danger"
-                  onClick={async () => {
-                    if (!confirm(`Remove ${p.name} from the list? Their existing bookings stay as they are.`)) return;
-                    await api(`/admin/people/${p.id}`, { method: "DELETE" }).catch((e) => setError(errorText(e)));
-                    changed();
-                  }}
-                >
-                  Remove
-                </button>
+                      },
+                    },
+                  ]}
+                />
               </td>
             </tr>
           ))}
-          {!shown.length && <tr><td colSpan={5} className="muted">No people yet.</td></tr>}
+          {!shown.length && <tr><td colSpan={4} className="muted">No people yet.</td></tr>}
         </tbody>
       </table>
 
@@ -901,5 +1004,145 @@ function PeopleTab({ team, onChange }: { team: AdminTeam; onChange: () => void }
         </Modal>
       )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------- Locations
+
+function LocationsTab({ team, onChange }: { team: AdminTeam; onChange: () => void }) {
+  const [locs, setLocs] = useState<Locations>({ campuses: [], buildings: [] });
+  const [error, setError] = useState("");
+  const [campusName, setCampusName] = useState("");
+  const [bld, setBld] = useState({ name: "", code: "", campusId: "" });
+  const load = useCallback(() => {
+    api<Locations>(`/admin/teams/${team.id}/locations`).then(setLocs).catch((e) => setError(errorText(e)));
+  }, [team.id]);
+  useEffect(load, [load]);
+  const run = async (p: Promise<Locations>) => {
+    setError("");
+    try {
+      setLocs(await p);
+      onChange();
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  const order = (kind: "campuses" | "buildings") => async (ids: number[]) => {
+    try {
+      await api(`/admin/teams/${team.id}/order/${kind}`, { body: { ids } });
+      load();
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
+  return (
+    <section className="locations">
+      <p className="muted">
+        The campuses and buildings you pick from in the room form. Renaming one here updates every room that uses it. Drag to change the order
+        they appear in the room form.
+      </p>
+      {error && <p className="error">{error}</p>}
+      <div className="loc-grid">
+        <div className="card">
+          <h2>Campuses</h2>
+          <SortableList
+            className="loc-list"
+            items={locs.campuses}
+            label={(c) => c.name}
+            onReorder={order("campuses")}
+            render={(c) => (
+              <LocRow
+                key={`${c.id}-${c.name}`}
+                name={c.name}
+                count={c.roomCount}
+                onRename={(name) => run(api(`/admin/campuses/${c.id}`, { method: "PATCH", body: { name } }))}
+                onDelete={() => confirm(`Remove campus ${c.name}?`) && run(api(`/admin/campuses/${c.id}`, { method: "DELETE" }))}
+              />
+            )}
+          />
+          {!locs.campuses.length && <p className="muted">No campuses yet.</p>}
+          <form className="row wrap add-row" onSubmit={(e) => { e.preventDefault(); run(api(`/admin/teams/${team.id}/campuses`, { body: { name: campusName } })).then(() => setCampusName("")); }}>
+            <input aria-label="New campus name" placeholder="e.g. North Oshawa" value={campusName} onChange={(e) => setCampusName(e.target.value)} required maxLength={120} />
+            <button className="btn">Add campus</button>
+          </form>
+        </div>
+
+        <div className="card">
+          <h2>Buildings</h2>
+          <SortableList
+            className="loc-list"
+            items={locs.buildings}
+            label={(b) => b.name}
+            onReorder={order("buildings")}
+            render={(b) => (
+              <BuildingRow
+                key={`${b.id}-${b.name}-${b.code}-${b.campusId}`}
+                b={b}
+                campuses={locs.campuses}
+                onSave={(v) => run(api(`/admin/buildings/${b.id}`, { method: "PATCH", body: v }))}
+                onDelete={() => confirm(`Remove building ${b.name}?`) && run(api(`/admin/buildings/${b.id}`, { method: "DELETE" }))}
+              />
+            )}
+          />
+          {!locs.buildings.length && <p className="muted">No buildings yet.</p>}
+          <form
+            className="row wrap add-row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              run(api(`/admin/teams/${team.id}/buildings`, { body: { ...bld, campusId: bld.campusId ? Number(bld.campusId) : null } })).then(() => setBld({ name: "", code: "", campusId: bld.campusId }));
+            }}
+          >
+            <input aria-label="New building name" placeholder="Building name" value={bld.name} onChange={(e) => setBld({ ...bld, name: e.target.value })} required maxLength={120} />
+            <input aria-label="Building code" placeholder="Code (e.g. BIT)" value={bld.code} onChange={(e) => setBld({ ...bld, code: e.target.value })} maxLength={20} style={{ width: "9rem" }} />
+            <select aria-label="Campus for new building" value={bld.campusId} onChange={(e) => setBld({ ...bld, campusId: e.target.value })}>
+              <option value="">No campus</option>
+              {locs.campuses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <button className="btn">Add building</button>
+          </form>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LocRow({ name, count, onRename, onDelete }: { name: string; count: number; onRename: (n: string) => void; onDelete: () => void }) {
+  const [v, setV] = useState(name);
+  return (
+    <div className="loc-row">
+      <input aria-label="Campus name" value={v} onChange={(e) => setV(e.target.value)} maxLength={120} />
+      <span className="muted small-text">{count} {count === 1 ? "room" : "rooms"}</span>
+      {v.trim() && v !== name && <button className="btn small primary" onClick={() => onRename(v.trim())}>Save</button>}
+      <button className="btn small ghost danger" onClick={onDelete} disabled={count > 0} title={count ? "Move its rooms first" : undefined}>Remove</button>
+    </div>
+  );
+}
+
+function BuildingRow({
+  b,
+  campuses,
+  onSave,
+  onDelete,
+}: {
+  b: Locations["buildings"][number];
+  campuses: Locations["campuses"];
+  onSave: (v: { name: string; code: string; campusId: number | null }) => void;
+  onDelete: () => void;
+}) {
+  const [d, setD] = useState({ name: b.name, code: b.code, campusId: b.campusId });
+  const dirty = d.name !== b.name || d.code !== b.code || d.campusId !== b.campusId;
+  return (
+    <div className="loc-row building">
+      <input aria-label="Building name" value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} maxLength={120} />
+      <input aria-label="Building code" value={d.code} placeholder="Code" onChange={(e) => setD({ ...d, code: e.target.value })} maxLength={20} className="code" />
+      <select aria-label="Campus" value={d.campusId ?? ""} onChange={(e) => setD({ ...d, campusId: e.target.value ? Number(e.target.value) : null })}>
+        <option value="">No campus</option>
+        {campuses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+      </select>
+      <span className="muted small-text">{b.roomCount} {b.roomCount === 1 ? "room" : "rooms"}</span>
+      {dirty && d.name.trim() && <button className="btn small primary" onClick={() => onSave({ ...d, name: d.name.trim() })}>Save</button>}
+      <button className="btn small ghost danger" onClick={onDelete} disabled={b.roomCount > 0} title={b.roomCount ? "Move its rooms first" : undefined}>Remove</button>
+    </div>
   );
 }
